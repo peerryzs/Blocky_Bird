@@ -1,0 +1,303 @@
+import asyncio
+import platform
+import pygame
+import random
+import time
+
+# Initialize Pygame
+pygame.init()
+
+# Base constants (for 400x600 resolution)
+BASE_WIDTH, BASE_HEIGHT = 400, 600
+BIRD_SIZE = 30
+SPIKE_WIDTH = 50
+GAP = 200
+BEAM_WIDTH = 20
+BEAM_HEIGHT = 10
+BEAM_SPEED = 12
+BEAM_SPAWN_INTERVAL = 1
+BEAM2_DELAY = 0.5  # Delay for second yellow beam
+GRAVITY = 0.9
+FLAP = -14
+SPEED = 5
+BIRD_SPEED = 2
+FPS = 60
+BLOCK_MAN_SIZE = 50
+BLOCK_MAN_SPEED = 2
+BLOCK_MAN_BEAM_INTERVAL = 0.5
+BLOCK_MAN_FADE_DURATION = 1.0
+
+# Colors
+WHITE = (255, 255, 255)
+BLUE = (0, 0, 255)
+GRAY = (128, 128, 128)
+BLACK = (0, 0, 0)
+YELLOW = (255, 255, 0)
+RED = (255, 0, 0)
+
+# Set up display in full-screen mode
+screen = pygame.display.set_mode((0, 0), pygame.FULLSCREEN)
+WIDTH, HEIGHT = pygame.display.get_surface().get_size()
+pygame.display.set_caption("Blocky Bird")
+clock = pygame.time.Clock()
+
+# Scaling factors based on screen resolution
+scale_x = WIDTH / BASE_WIDTH
+scale_y = HEIGHT / BASE_HEIGHT
+BIRD_SIZE = int(BIRD_SIZE * scale_y)
+SPIKE_WIDTH = int(SPIKE_WIDTH * scale_x)
+GAP = int(GAP * scale_y)
+BEAM_WIDTH = int(BEAM_WIDTH * scale_x)
+BEAM_HEIGHT = int(BEAM_HEIGHT * scale_y)
+BLOCK_MAN_SIZE = int(BLOCK_MAN_SIZE * scale_y)
+BIRD_X_START = int(100 * scale_x)
+
+# Game variables
+bird_x = BIRD_X_START
+bird_y = HEIGHT // 2
+bird_vel = 0
+spikes = []
+beams = []
+score = 0
+game_over = False
+last_beam_time = 0
+last_beam2_time = 0
+camera_x = 0
+jump_count = 0
+block_man = None
+last_block_man_beam = 0
+block_man_fight_jumps = 0
+
+def draw_bird():
+    render_x = bird_x - camera_x
+    body_rect = pygame.Rect(int(render_x), int(bird_y), BIRD_SIZE, BIRD_SIZE)
+    pygame.draw.rect(screen, BLUE, body_rect)
+    beak_points = [(int(render_x) + BIRD_SIZE, int(bird_y) + BIRD_SIZE // 2),
+                   (int(render_x) + BIRD_SIZE + int(10 * scale_x), int(bird_y) + BIRD_SIZE // 2 - int(5 * scale_y)),
+                   (int(render_x) + BIRD_SIZE + int(10 * scale_x), int(bird_y) + BIRD_SIZE // 2 + int(5 * scale_y))]
+    pygame.draw.polygon(screen, (255, 165, 0), beak_points)
+    pygame.draw.rect(screen, WHITE, (int(render_x) + BIRD_SIZE - int(10 * scale_x), int(bird_y) + int(5 * scale_y), int(5 * scale_x), int(5 * scale_y)))
+    pygame.draw.rect(screen, BLACK, (int(render_x) + BIRD_SIZE - int(9 * scale_x), int(bird_y) + int(6 * scale_y), int(3 * scale_x), int(3 * scale_y)))
+
+def draw_spikes():
+    for spike in spikes:
+        render_x = spike['x'] - camera_x
+        gap_top = spike['gap_top']
+        segments = 5
+        segment_height = gap_top // segments
+        bottom_segment_height = (HEIGHT - (gap_top + GAP)) // segments
+
+        top_points = []
+        for i in range(segments + 1):
+            y = i * segment_height
+            if i % 2 == 0:
+                top_points.append((render_x, y))
+                top_points.append((render_x + SPIKE_WIDTH, y))
+            else:
+                top_points.append((render_x + int(10 * scale_x), y))
+                top_points.append((render_x + SPIKE_WIDTH - int(10 * scale_x), y))
+        if top_points:
+            top_points[-2] = (render_x + int(10 * scale_x), gap_top)
+            top_points[-1] = (render_x + SPIKE_WIDTH - int(10 * scale_x), gap_top)
+        pygame.draw.polygon(screen, BLACK, top_points, 2)
+        pygame.draw.polygon(screen, GRAY, top_points)
+
+        bottom_points = []
+        for i in range(segments + 1):
+            y = gap_top + GAP + i * bottom_segment_height
+            if i % 2 == 0:
+                bottom_points.append((render_x, y))
+                bottom_points.append((render_x + SPIKE_WIDTH, y))
+            else:
+                bottom_points.append((render_x + int(10 * scale_x), y))
+                bottom_points.append((render_x + SPIKE_WIDTH - int(10 * scale_x), y))
+        if bottom_points:
+            bottom_points[-2] = (render_x + int(10 * scale_x), HEIGHT)
+            bottom_points[-1] = (render_x + SPIKE_WIDTH - int(10 * scale_x), HEIGHT)
+        pygame.draw.polygon(screen, BLACK, bottom_points, 2)
+        pygame.draw.polygon(screen, GRAY, bottom_points)
+
+def draw_beams():
+    for beam in beams:
+        render_x = beam['x'] - camera_x
+        beam_rect = pygame.Rect(render_x, beam['y'], BEAM_WIDTH, BEAM_HEIGHT)
+        color = RED if beam.get('from_block_man', False) else YELLOW
+        pygame.draw.rect(screen, color, beam_rect)
+        pygame.draw.rect(screen, BLACK, beam_rect, 1)
+
+def draw_block_man():
+    if block_man:
+        render_x = block_man['x'] - camera_x
+        block_man_surface = pygame.Surface((BLOCK_MAN_SIZE, BLOCK_MAN_SIZE), pygame.SRCALPHA)
+        alpha = int(255 * min(1.0, (time.time() - block_man['spawn_time']) / BLOCK_MAN_FADE_DURATION))
+        body_rect = pygame.Rect(0, 0, BLOCK_MAN_SIZE, BLOCK_MAN_SIZE)
+        pygame.draw.rect(block_man_surface, (*RED, alpha), body_rect)
+        pygame.draw.rect(block_man_surface, (*BLACK, alpha), body_rect, 2)
+        eye_rect = pygame.Rect(int(10 * scale_x), int(10 * scale_y), int(5 * scale_x), int(5 * scale_y))
+        pygame.draw.rect(block_man_surface, (*WHITE, alpha), eye_rect)
+        pygame.draw.rect(block_man_surface, (*BLACK, alpha), (int(11 * scale_x), int(11 * scale_y), int(3 * scale_x), int(3 * scale_y)))
+        screen.blit(block_man_surface, (render_x, block_man['y']))
+
+def setup():
+    global bird_x, bird_y, bird_vel, spikes, beams, score, game_over, last_beam_time, last_beam2_time, camera_x, jump_count, block_man, last_block_man_beam, block_man_fight_jumps
+    bird_x = BIRD_X_START
+    bird_y = HEIGHT // 2
+    bird_vel = 0
+    spikes = []
+    beams = []
+    score = 0
+    game_over = False
+    last_beam_time = time.time()
+    last_beam2_time = time.time()
+    camera_x = 0
+    jump_count = 0
+    block_man = None
+    last_block_man_beam = 0
+    block_man_fight_jumps = 0
+    gap_top = random.randint(int(100 * scale_y), HEIGHT - GAP - int(100 * scale_y))
+    spikes.append({'x': WIDTH + camera_x, 'gap_top': gap_top})
+
+def update_loop():
+    global bird_x, bird_y, bird_vel, spikes, beams, score, game_over, last_beam_time, last_beam2_time, camera_x, block_man, last_block_man_beam, block_man_fight_jumps
+    if not game_over:
+        # Update bird
+        bird_vel += GRAVITY
+        bird_y += bird_vel
+        bird_x += BIRD_SPEED
+        if bird_y < 0:
+            bird_y = 0
+            bird_vel = 0
+        elif bird_y > HEIGHT - BIRD_SIZE:
+            bird_y = HEIGHT - BIRD_SIZE
+            bird_vel = 0
+
+        # Update camera to center bird
+        camera_x = bird_x - WIDTH // 2 + BIRD_SIZE // 2
+
+        # Update spikes
+        for spike in spikes:
+            spike['x'] -= SPEED
+        if spikes and spikes[0]['x'] - camera_x < -SPIKE_WIDTH:
+            spikes.pop(0)
+            score += 1
+        if not spikes or spikes[-1]['x'] - camera_x < WIDTH - int(150 * scale_x):
+            gap_top = random.randint(int(100 * scale_y), HEIGHT - GAP - int(100 * scale_y))
+            spikes.append({'x': WIDTH + camera_x, 'gap_top': gap_top})
+
+        # Spawn yellow beams
+        current_time = time.time()
+        closest_spike = None
+        min_distance = float('inf')
+        for spike in spikes:
+            screen_x = spike['x'] - camera_x
+            distance = abs(screen_x - WIDTH // 2)
+            if -SPIKE_WIDTH <= screen_x <= WIDTH + SPIKE_WIDTH and distance < min_distance:
+                min_distance = distance
+                closest_spike = spike
+        if not closest_spike:
+            gap_top = (HEIGHT - GAP) // 2
+        else:
+            gap_top = closest_spike['gap_top']
+        gap_range = gap_top + GAP - BEAM_HEIGHT
+
+        # Spawn first beam
+        if current_time - last_beam_time > BEAM_SPAWN_INTERVAL:
+            beam_y1 = random.randint(gap_top, gap_range)
+            beams.append({'x': -camera_x, 'y': beam_y1})
+            last_beam_time = current_time
+
+        # Spawn second beam with 0.5s delay
+        if current_time - last_beam2_time > BEAM_SPAWN_INTERVAL + BEAM2_DELAY:
+            beam_y2 = random.randint(gap_top, gap_range)
+            beams.append({'x': -camera_x, 'y': beam_y2})
+            last_beam2_time = current_time
+
+        # Update block man
+        if block_man:
+            block_man['x'] -= BLOCK_MAN_SPEED
+            if block_man['x'] - camera_x < -BLOCK_MAN_SIZE:
+                block_man = None
+                block_man_fight_jumps = 0
+            else:
+                if current_time - last_block_man_beam > BLOCK_MAN_BEAM_INTERVAL:
+                    beam_y = block_man['y'] + BLOCK_MAN_SIZE // 2 - BEAM_HEIGHT // 2
+                    beams.append({'x': block_man['x'], 'y': beam_y, 'from_block_man': True})
+                    last_block_man_beam = current_time
+
+        # Update beams
+        for beam in beams[:]:
+            beam['x'] += BEAM_SPEED
+            if beam['x'] - camera_x > WIDTH:
+                beams.remove(beam)
+
+        # Check collisions
+        bird_rect = pygame.Rect(bird_x - camera_x, bird_y, BIRD_SIZE, BIRD_SIZE)
+        for spike in spikes:
+            top_spike = pygame.Rect(spike['x'] - camera_x + int(10 * scale_x), 0, SPIKE_WIDTH - int(20 * scale_x), spike['gap_top'])
+            bottom_spike = pygame.Rect(spike['x'] - camera_x + int(10 * scale_x), spike['gap_top'] + GAP, SPIKE_WIDTH - int(20 * scale_x), HEIGHT - (spike['gap_top'] + GAP))
+            if bird_rect.colliderect(top_spike) or bird_rect.colliderect(bottom_spike) or bird_y < 0 or bird_y > HEIGHT:
+                game_over = True
+
+        for beam in beams:
+            beam_rect = pygame.Rect(beam['x'] - camera_x, beam['y'], BEAM_WIDTH, BEAM_HEIGHT)
+            if bird_rect.colliderect(beam_rect):
+                game_over = True
+
+        if block_man and (time.time() - block_man['spawn_time']) > BLOCK_MAN_FADE_DURATION:
+            block_man_rect = pygame.Rect(block_man['x'] - camera_x, block_man['y'], BLOCK_MAN_SIZE, BLOCK_MAN_SIZE)
+            if bird_rect.colliderect(block_man_rect):
+                game_over = True
+
+    # Draw
+    screen.fill(WHITE)
+    draw_spikes()
+    draw_beams()
+    draw_block_man()
+    draw_bird()
+    font = pygame.font.Font(None, int(36 * scale_y))
+    score_text = font.render(str(score), True, BLACK)
+    screen.blit(score_text, (WIDTH // 2, int(50 * scale_y)))
+    if game_over:
+        game_over_text = font.render("Game Over! Press R to Restart", True, BLACK)
+        screen.blit(game_over_text, (WIDTH // 2 - int(150 * scale_x), HEIGHT // 2))
+    pygame.display.flip()
+
+async def main():
+    global jump_count, block_man, block_man_fight_jumps, last_block_man_beam
+    setup()
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                return
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_SPACE and not game_over:
+                    global bird_vel
+                    bird_vel = FLAP
+                    jump_count += 1
+                    if jump_count == 7 or (jump_count > 11 and (jump_count - 7) % 7 == 0):
+                        block_man = {
+                            'x': bird_x - int(100 * scale_x),
+                            'y': bird_y - BLOCK_MAN_SIZE // 2,
+                            'spawn_time': time.time()
+                        }
+                        block_man_fight_jumps = 0
+                        last_block_man_beam = time.time()
+                    elif block_man and (jump_count >= 11 and (jump_count - 11) % 7 == 0):
+                        block_man = None
+                        block_man_fight_jumps = 0
+                    if block_man:
+                        block_man_fight_jumps += 1
+                if event.key == pygame.K_r and game_over:
+                    setup()
+                if event.key == pygame.K_ESCAPE:
+                    pygame.quit()
+                    return
+        update_loop()
+        await asyncio.sleep(1.0 / FPS)
+
+if platform.system() == "Emscripten":
+    asyncio.ensure_future(main())
+else:
+    if __name__ == "__main__":
+        asyncio.run(main())
